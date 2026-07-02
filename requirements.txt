@@ -1,0 +1,2 @@
+# torch and ComfyUI are assumed pre-installed (this is a ComfyUI node pack).
+hicache-pp>=1.1.0

@@ -4,7 +4,7 @@
 [project]
 name = "comfyui-trellis2-hicache"
 description = "Training-free TRELLIS.2 image-to-3D acceleration: forecast the flow-matching velocity on skipped DiT steps (HiCache Hermite / HiCache++ DMD, via hicache-pp) across the sparse-structure and shape-SLaT stages (texture optional). ~2x faster, near-lossless. Pairs with visualbruno/ComfyUI-Trellis2."
-version = "0.1.2"
+version = "0.1.3"
 keywords = ["comfyui", "diffusion-acceleration", "caching", "training-free", "trellis2", "image-to-3d"]
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
@@ -18,7 +18,7 @@ BugTracker = "https://github.com/Archerkattri/ComfyUI-TRELLIS2-HiCache/issues"
 [tool.comfy]
 PublisherId = "archerkattri"
 DisplayName = "ComfyUI-TRELLIS2-HiCache"
-Icon = "icon.png"
+Icon = "https://raw.githubusercontent.com/Archerkattri/ComfyUI-TRELLIS2-HiCache/master/icon.png"
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"

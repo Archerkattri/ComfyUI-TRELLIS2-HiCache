@@ -165,7 +165,15 @@ def test_bind_inner_materializes_lazy_model():
 def test_lazy_pipeline_autobinds_on_assignment():
     """End-to-end lazy flow: patch a pipeline whose flow model is still None, then
     the sampler assigns the real model into pipeline.models[key]; the patch must
-    bind it (not be overwritten) and then skip DiT steps."""
+    wrap it (not be overwritten by the raw model) and then skip DiT steps.
+
+    The slot is left as real ``None`` (not an eager HiCacheModelPatch(None)
+    placeholder) until that assignment: some lazy pipelines (e.g.
+    ComfyUI-Trellis2-GGUF) gate their loader on
+    ``if pipeline.models[key] is None``, and no wrapper object can ever
+    satisfy that identity check, so a placeholder there would silently stop
+    the model from ever loading (see test_lazy_pipeline_guard_then_load_still_triggers).
+    """
     class LazyPipe:
         def __init__(self):
             self.models = {"sparse_structure_flow_model": None,
@@ -173,19 +181,68 @@ def test_lazy_pipeline_autobinds_on_assignment():
                            "shape_slat_flow_model_1024": None}
     p = LazyPipe()
     patched = apply_hicache(p, method="hermite", interval=3, warmup_steps=2, stages="sparse_structure")
-    slot = patched.models["sparse_structure_flow_model"]
-    assert getattr(slot, "_hicache_is_patch", False)
-    assert slot.inner is None                      # deferred
+    # deferred, not wrapped yet -- a guard-then-load pipeline's `is None`
+    # check must still see a real None here, or it will never call its loader.
+    assert patched.models["sparse_structure_flow_model"] is None
     # sampler materializes the real DiT (the exact GGUF lazy-load path)
     dit = DummyDiT()
     patched.models["sparse_structure_flow_model"] = dit
-    # same patch object, now bound -- not overwritten by the raw DiT
-    assert patched.models["sparse_structure_flow_model"] is slot
+    slot = patched.models["sparse_structure_flow_model"]
+    assert getattr(slot, "_hicache_is_patch", False)
     assert slot.inner is dit
     for t in _trellis_t_seq(25):
         slot(torch.zeros(1, 8), t)
     assert slot.skipped_steps > 0
     assert dit.calls == slot.computed_steps
+
+
+def test_lazy_pipeline_guard_then_load_still_triggers():
+    """Regression for the exact ComfyUI-Trellis2-GGUF pattern (issue #1 follow-up):
+    the loader gates the real load on `if pipeline.models[key] is None`. An eager
+    HiCacheModelPatch(None) placeholder is not None, so that guard would read
+    "already loaded" and skip loading forever -- the model would never
+    materialize and every attribute access on the patch would raise. Also
+    covers the load/unload/reload cycle some GGUF nodes do for VRAM
+    management: the patch must be re-applied on every load, not just the first.
+    """
+    class GuardedLazyPipe:
+        def __init__(self):
+            self.models = {"sparse_structure_flow_model": None}
+            self.load_calls = 0
+
+        def load_sparse_structure_model(self):
+            if self.models["sparse_structure_flow_model"] is None:
+                self.load_calls += 1
+                self.models["sparse_structure_flow_model"] = DummyDiT()
+
+    p = GuardedLazyPipe()
+    patched = apply_hicache(p, stages="sparse_structure")
+    patched.load_sparse_structure_model()
+    assert patched.load_calls == 1          # the guard actually fired
+    slot = patched.models["sparse_structure_flow_model"]
+    assert getattr(slot, "_hicache_is_patch", False)   # and got wrapped
+
+    # unload (reset to None) / reload cycle: must re-wrap, not fall back to a
+    # bare, unaccelerated DiT the second time.
+    patched.models["sparse_structure_flow_model"] = None
+    patched.load_sparse_structure_model()
+    assert patched.load_calls == 2
+    assert getattr(patched.models["sparse_structure_flow_model"], "_hicache_is_patch", False)
+
+
+def test_remove_hicache_clears_pending_before_any_load():
+    """Disabling HiCache before a lazy model ever loaded must stop a later load
+    from getting wrapped anyway -- the pending patch config has to be dropped
+    even though there's no HiCacheModelPatch yet for the early-return check to find."""
+    class LazyPipe:
+        def __init__(self):
+            self.models = {"sparse_structure_flow_model": None}
+    p = LazyPipe()
+    patched = apply_hicache(p, stages="sparse_structure")
+    assert patched.models["sparse_structure_flow_model"] is None  # still deferred
+    clean = remove_hicache(patched)
+    clean.models["sparse_structure_flow_model"] = DummyDiT()
+    assert not getattr(clean.models["sparse_structure_flow_model"], "_hicache_is_patch", False)
 
 
 def test_eager_inner_still_registered_as_submodule():

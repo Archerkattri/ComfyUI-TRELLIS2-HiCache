@@ -132,6 +132,74 @@ def test_apply_never_nests():
     assert b.models["shape_slat_flow_model_512"].interval == 3
 
 
+def test_wrap_none_does_not_crash_on_attr_access():
+    """Regression for issue #1: GGUF/lazy pipelines leave pipeline.models[key]=None
+    at patch time. Wrapping None must not raise, and an unknown-attribute lookup
+    must give a clear 'not loaded yet' error, NOT the misleading
+    'HiCacheModelPatch object has no attribute inner'."""
+    patch = HiCacheModelPatch(None, method="hermite", interval=3, warmup_steps=2)
+    assert patch.inner is None                     # readable, no crash
+    with pytest.raises(AttributeError) as ei:
+        _ = patch.some_config_attr                 # forwarded lookup on a None inner
+    msg = str(ei.value)
+    assert "not loaded yet" in msg and "some_config_attr" in msg
+    # a compute step on an unbound patch fails loudly, not silently
+    with pytest.raises(RuntimeError):
+        patch(torch.zeros(1, 8), _trellis_t_seq(4)[0])
+
+
+def test_bind_inner_materializes_lazy_model():
+    """After the real DiT loads, bind_inner attaches it and forwards run/skip."""
+    patch = HiCacheModelPatch(None, method="hermite", interval=3, warmup_steps=2)
+    dit = DummyDiT()
+    assert patch.bind_inner(dit) is patch
+    assert patch.inner is dit
+    assert "inner" in patch._modules          # registered as a submodule
+    for t in _trellis_t_seq(25):
+        patch(torch.zeros(1, 8), t)
+    assert patch.skipped_steps > 0
+    assert dit.calls == patch.computed_steps
+    assert patch.computed_steps + patch.skipped_steps == 25
+
+
+def test_lazy_pipeline_autobinds_on_assignment():
+    """End-to-end lazy flow: patch a pipeline whose flow model is still None, then
+    the sampler assigns the real model into pipeline.models[key]; the patch must
+    bind it (not be overwritten) and then skip DiT steps."""
+    class LazyPipe:
+        def __init__(self):
+            self.models = {"sparse_structure_flow_model": None,
+                           "shape_slat_flow_model_512": None,
+                           "shape_slat_flow_model_1024": None}
+    p = LazyPipe()
+    patched = apply_hicache(p, method="hermite", interval=3, warmup_steps=2, stages="sparse_structure")
+    slot = patched.models["sparse_structure_flow_model"]
+    assert getattr(slot, "_hicache_is_patch", False)
+    assert slot.inner is None                      # deferred
+    # sampler materializes the real DiT (the exact GGUF lazy-load path)
+    dit = DummyDiT()
+    patched.models["sparse_structure_flow_model"] = dit
+    # same patch object, now bound -- not overwritten by the raw DiT
+    assert patched.models["sparse_structure_flow_model"] is slot
+    assert slot.inner is dit
+    for t in _trellis_t_seq(25):
+        slot(torch.zeros(1, 8), t)
+    assert slot.skipped_steps > 0
+    assert dit.calls == slot.computed_steps
+
+
+def test_eager_inner_still_registered_as_submodule():
+    """Eager path unbroken: a real nn.Module inner stays a registered submodule so
+    state_dict / parameters / device moves recurse into it."""
+    dit = DummyDiT()
+    patch = HiCacheModelPatch(dit, method="hermite", interval=3)
+    assert patch.inner is dit
+    assert "inner" in patch._modules
+    # inner's parameters are reachable through the patch (state_dict recurses)
+    assert any(k.startswith("inner.") for k in patch.state_dict().keys())
+    assert any(p is q for q in dit.parameters() for p in patch.parameters())
+
+
 def test_stages_selector():
     class Pipe:
         def __init__(self):

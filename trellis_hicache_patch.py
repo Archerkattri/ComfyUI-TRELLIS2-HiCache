@@ -130,12 +130,18 @@ class HiCacheModelPatch(torch.nn.Module):
     dense-tensor (sparse-structure stage) and SparseTensor (SLaT stage) outputs.
     """
 
-    def __init__(self, model: torch.nn.Module, *, method: str = "hermite",
+    def __init__(self, model: Optional[torch.nn.Module], *, method: str = "hermite",
                  interval: int = 3, warmup_steps: int = 2, max_order: int = 1,
                  sigma: float = 0.5, dmd_history: int = 5) -> None:
         validate_config(method, interval, warmup_steps, max_order, sigma, dmd_history)
         super().__init__()
-        self.inner = model
+        # ``model`` may be None here: GGUF / lazy Trellis2 pipelines
+        # (e.g. Aero-Ex/ComfyUI-Trellis2-GGUF) leave pipeline.models[key] empty at
+        # patch time and materialize the flow DiT later, inside the sampler. Store
+        # the wrapped model so it survives both cases -- a real nn.Module is
+        # registered as a submodule (so .to()/.state_dict()/.parameters() recurse),
+        # while a None/lazy placeholder is kept as a plain attribute. See _set_inner.
+        self._set_inner(model)
         self._hicache_is_patch = True
         self.method = method
         self.interval = int(interval)
@@ -154,12 +160,54 @@ class HiCacheModelPatch(torch.nn.Module):
         self.computed_steps = 0
         self.skipped_steps = 0
 
+    def _set_inner(self, model: Optional[torch.nn.Module]) -> None:
+        """Store the wrapped model so ``self.inner`` is always resolvable.
+
+        A real ``nn.Module`` is registered in ``_modules`` (so device moves and
+        ``state_dict`` recurse into it, exactly as the eager path relied on). A
+        ``None`` placeholder -- or any non-Module -- is kept as a plain attribute
+        in ``__dict__``. The bug this avoids: ``nn.Module.__setattr__`` only routes
+        real Modules into ``_modules``; a None assigned to ``self.inner`` lands in
+        ``__dict__`` instead, and ``nn.Module.__getattr__`` never searches
+        ``__dict__`` -- so the old ``__getattr__`` fallback raised the misleading
+        ``'HiCacheModelPatch' object has no attribute 'inner'`` for lazy pipelines.
+        """
+        for d in (self.__dict__, self._parameters, self._buffers, self._modules):
+            d.pop("inner", None)
+        if isinstance(model, torch.nn.Module):
+            self._modules["inner"] = model
+        else:
+            object.__setattr__(self, "inner", model)
+
+    def _inner(self) -> Any:
+        """The wrapped model from wherever it lives (submodule or plain attr)."""
+        mod = self.__dict__.get("_modules")
+        if mod is not None and "inner" in mod:
+            return mod["inner"]
+        return self.__dict__.get("inner")
+
+    def bind_inner(self, model: torch.nn.Module) -> "HiCacheModelPatch":
+        """Attach the real flow model to a patch created around a lazy (None)
+        placeholder, and register it as a submodule. Lets GGUF / lazy pipelines
+        that materialize the DiT after patching still route through the cache."""
+        self._set_inner(model)
+        return self
+
     def __getattr__(self, name: str):
         try:
             return super().__getattr__(name)
         except AttributeError:
-            inner = super().__getattr__("inner")
-            return getattr(inner, name)
+            pass
+        inner = self._inner()
+        if inner is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} has no attribute {name!r}: the wrapped "
+                f"flow model is not loaded yet (inner is None). Lazy / GGUF Trellis2 "
+                f"pipelines materialize the DiT inside the sampler; the patch binds "
+                f"it automatically when it is assigned into pipeline.models, or call "
+                f"bind_inner(model) explicitly."
+            )
+        return getattr(inner, name)
 
     def _fresh_state(self) -> Dict[str, Any]:
         return hicache_init(
@@ -237,7 +285,15 @@ class HiCacheModelPatch(torch.nn.Module):
                 return tmpl.replace(forecast_feat)
             return forecast_feat
 
-        out = self.inner(latent_model_input, timestep, *args, **kwargs)
+        inner = self._inner()
+        if inner is None:
+            raise RuntimeError(
+                "HiCacheModelPatch: a compute step was reached but the wrapped flow "
+                "model is not loaded (inner is None). For lazy / GGUF Trellis2 "
+                "pipelines, apply HiCache after the model is materialized, or call "
+                "bind_inner(model) once it is available."
+            )
+        out = inner(latent_model_input, timestep, *args, **kwargs)
         if _is_sparse(out):
             anchor = out.feats.detach()
             if is_uncond:
@@ -256,6 +312,33 @@ class HiCacheModelPatch(torch.nn.Module):
         state["step"] += 1
         self.computed_steps += 1
         return out
+
+
+class _LazyPatchDict(dict):
+    """A ``pipeline.models`` drop-in that keeps patches alive across lazy loads.
+
+    GGUF / lazy Trellis2 pipelines leave a flow-model slot empty (``None``) at
+    patch time and assign the real DiT later, from inside the sampler, via
+    ``pipeline.models[key] = model``. With a plain dict that assignment would
+    overwrite the :class:`HiCacheModelPatch` wrapper and silently disable the
+    cache. This subclass instead *binds* the freshly loaded model into the
+    existing patch, so acceleration survives the lazy load with no user action.
+    It is a ``dict`` subclass, so ``isinstance(models, dict)`` checks still pass.
+    """
+
+    def __setitem__(self, key, value):
+        existing = self.get(key)
+        if (isinstance(existing, HiCacheModelPatch)
+                and value is not None
+                and not getattr(value, "_hicache_is_patch", False)
+                and not isinstance(value, HiCacheModelPatch)):
+            existing.bind_inner(value)   # materialize lazy model into the patch
+            return
+        super().__setitem__(key, value)
+
+    def update(self, *args, **kwargs):  # route bulk updates through __setitem__
+        for k, v in dict(*args, **kwargs).items():
+            self[k] = v
 
 
 def _resolve_keys(pipeline: Any, stages: str) -> List[str]:
@@ -286,14 +369,25 @@ def apply_hicache(pipeline: Any, *, method: str = "hermite", interval: int = 3,
     """
     keys = _resolve_keys(pipeline, stages)
     patched = copy.copy(pipeline)
-    patched.models = dict(pipeline.models)   # copy dict so the original is untouched
+    # _LazyPatchDict (a dict subclass) so a later pipeline.models[key] = model
+    # from a lazy/GGUF sampler binds into the patch instead of overwriting it.
+    patched.models = _LazyPatchDict(pipeline.models)  # copy so the original is untouched
+    lazy_keys = []
     for key in keys:
         inner = patched.models[key]
         if getattr(inner, "_hicache_is_patch", False):
             inner = inner.inner  # replace, never nest
-        patched.models[key] = HiCacheModelPatch(
+        if inner is None:
+            lazy_keys.append(key)
+        dict.__setitem__(patched.models, key, HiCacheModelPatch(
             inner, method=method, interval=interval, warmup_steps=warmup_steps,
             max_order=max_order, sigma=sigma, dmd_history=dmd_history,
+        ))
+    if lazy_keys:
+        logger.warning(
+            "[TRELLIS-HiCache] %s not loaded yet (lazy/GGUF pipeline); wrapped a "
+            "deferred patch on %s -- it binds when the sampler materializes the model.",
+            type(pipeline).__name__, lazy_keys,
         )
     logger.info(
         "[TRELLIS-HiCache] patched %s on %s: method=%s interval=%d warmup=%d",

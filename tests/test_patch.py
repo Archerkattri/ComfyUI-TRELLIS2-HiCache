@@ -274,6 +274,89 @@ def test_lazy_subset_reapply_preserves_unselected_pending_stages():
     assert texture.method == "hermite"
 
 
+class GGUFLikeLazyPipe:
+    """Mirrors the real Aero-Ex/ComfyUI-Trellis2-GGUF load/unload pair, not just
+    a generic lazy pipeline: the loader guards on ``is None``
+    (``load_sparse_structure_model`` / ``load_shape_slat_flow_model_512``), and
+    the unloader ``del``s the dict entry before resetting it to ``None``
+    (``unload_sparse_structure_model`` / ``unload_shape_slat_flow_model_512``)
+    rather than reassigning directly. Two independent stages are modeled since
+    ``keep_models_loaded=False`` unloads/reloads each slot on its own schedule
+    within a single run.
+    """
+
+    def __init__(self):
+        self.models = {
+            "sparse_structure_flow_model": None,
+            "shape_slat_flow_model_512": None,
+        }
+        self.load_counts = {"sparse_structure_flow_model": 0, "shape_slat_flow_model_512": 0}
+
+    def load_sparse_structure_model(self):
+        if self.models["sparse_structure_flow_model"] is None:
+            self.load_counts["sparse_structure_flow_model"] += 1
+            self.models["sparse_structure_flow_model"] = DummyDiT()
+
+    def unload_sparse_structure_model(self):
+        if self.models["sparse_structure_flow_model"] is not None:
+            del self.models["sparse_structure_flow_model"]
+            self.models["sparse_structure_flow_model"] = None
+
+    def load_shape_slat_flow_model_512(self):
+        if self.models["shape_slat_flow_model_512"] is None:
+            self.load_counts["shape_slat_flow_model_512"] += 1
+            self.models["shape_slat_flow_model_512"] = DummyDiT()
+
+    def unload_shape_slat_flow_model_512(self):
+        if self.models["shape_slat_flow_model_512"] is not None:
+            del self.models["shape_slat_flow_model_512"]
+            self.models["shape_slat_flow_model_512"] = None
+
+
+def test_gguf_del_then_none_unload_still_rewraps_on_reload():
+    """Regression for the real GGUF unload cycle: it deletes the dict key
+    before resetting it to None, rather than reassigning None directly. `del`
+    only removes the dict entry -- it must not disturb `_pending`, or the very
+    next `is None`-guarded reload would silently load an unwrapped model.
+    Covers two independently-cycled stages, matching the real pipeline's
+    per-slot VRAM management."""
+    p = GGUFLikeLazyPipe()
+    patched = apply_hicache(p, method="hermite", interval=4, stages="both")
+    assert patched.models["sparse_structure_flow_model"] is None
+    assert patched.models["shape_slat_flow_model_512"] is None
+
+    patched.load_sparse_structure_model()
+    patched.load_shape_slat_flow_model_512()
+    ss1 = patched.models["sparse_structure_flow_model"]
+    shape1 = patched.models["shape_slat_flow_model_512"]
+    assert getattr(ss1, "_hicache_is_patch", False)
+    assert getattr(shape1, "_hicache_is_patch", False)
+
+    # unload one stage the exact real way (del, then reset to None) while the
+    # other stays loaded -- independent lifecycles, as the real pipeline does.
+    patched.unload_sparse_structure_model()
+    assert patched.models["sparse_structure_flow_model"] is None
+    assert patched.models["shape_slat_flow_model_512"] is shape1  # untouched
+
+    # reload: the `is None` guard must still fire, and the fresh model must be wrapped
+    patched.load_sparse_structure_model()
+    ss2 = patched.models["sparse_structure_flow_model"]
+    assert patched.load_counts["sparse_structure_flow_model"] == 2
+    assert ss2 is not ss1
+    assert getattr(ss2, "_hicache_is_patch", False)
+    assert ss2.interval == 4
+
+    # unload+reload the other stage too, confirming both slots independently
+    # survive the del/reload cycle
+    patched.unload_shape_slat_flow_model_512()
+    patched.load_shape_slat_flow_model_512()
+    shape2 = patched.models["shape_slat_flow_model_512"]
+    assert patched.load_counts["shape_slat_flow_model_512"] == 2
+    assert shape2 is not shape1
+    assert getattr(shape2, "_hicache_is_patch", False)
+    assert shape2.interval == 4
+
+
 def test_remove_hicache_clears_pending_before_any_load():
     """Disabling a pending patch must not re-enable it on a later assignment."""
     class LazyPipe:

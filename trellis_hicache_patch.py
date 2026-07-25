@@ -315,18 +315,38 @@ class HiCacheModelPatch(torch.nn.Module):
 
 
 class _LazyPatchDict(dict):
-    """A ``pipeline.models`` drop-in that keeps patches alive across lazy loads.
+    """A ``pipeline.models`` drop-in that patches models after lazy loads.
 
     GGUF / lazy Trellis2 pipelines leave a flow-model slot empty (``None``) at
     patch time and assign the real DiT later, from inside the sampler, via
-    ``pipeline.models[key] = model``. With a plain dict that assignment would
-    overwrite the :class:`HiCacheModelPatch` wrapper and silently disable the
-    cache. This subclass instead *binds* the freshly loaded model into the
-    existing patch, so acceleration survives the lazy load with no user action.
-    It is a ``dict`` subclass, so ``isinstance(models, dict)`` checks still pass.
+    ``pipeline.models[key] = model``. The slot must remain the real ``None``
+    singleton until then because loaders commonly guard the assignment with
+    ``if pipeline.models[key] is None``. Pending patch configuration therefore
+    lives out-of-band in ``_pending``; assigning a real model wraps it at that
+    boundary. Pending entries survive assignment back to ``None`` so VRAM
+    unload/reload cycles receive a fresh patch each time.
     """
 
+    def __init__(self, *args, **kwargs):
+        source = args[0] if args else None
+        super().__init__(*args, **kwargs)
+        inherited = getattr(source, "_pending", {})
+        self._pending = {key: dict(config) for key, config in inherited.items()}
+
+    def set_pending(self, key: str, config: Dict[str, Any]) -> None:
+        self._pending[key] = dict(config)
+        dict.__setitem__(self, key, None)
+
     def __setitem__(self, key, value):
+        if key in self._pending:
+            if value is None:
+                dict.__setitem__(self, key, None)
+                return
+            if not getattr(value, "_hicache_is_patch", False):
+                value = HiCacheModelPatch(value, **self._pending[key])
+            dict.__setitem__(self, key, value)
+            return
+
         existing = self.get(key)
         if (isinstance(existing, HiCacheModelPatch)
                 and value is not None
@@ -369,24 +389,33 @@ def apply_hicache(pipeline: Any, *, method: str = "hermite", interval: int = 3,
     """
     keys = _resolve_keys(pipeline, stages)
     patched = copy.copy(pipeline)
-    # _LazyPatchDict (a dict subclass) so a later pipeline.models[key] = model
-    # from a lazy/GGUF sampler binds into the patch instead of overwriting it.
+    # A dict subclass keeps real None sentinels visible to lazy/GGUF loader
+    # guards, then wraps the model at the assignment boundary.
     patched.models = _LazyPatchDict(pipeline.models)  # copy so the original is untouched
     lazy_keys = []
     for key in keys:
         inner = patched.models[key]
         if getattr(inner, "_hicache_is_patch", False):
             inner = inner.inner  # replace, never nest
+        config = {
+            "method": method,
+            "interval": interval,
+            "warmup_steps": warmup_steps,
+            "max_order": max_order,
+            "sigma": sigma,
+            "dmd_history": dmd_history,
+        }
         if inner is None:
             lazy_keys.append(key)
-        dict.__setitem__(patched.models, key, HiCacheModelPatch(
-            inner, method=method, interval=interval, warmup_steps=warmup_steps,
-            max_order=max_order, sigma=sigma, dmd_history=dmd_history,
-        ))
+            patched.models.set_pending(key, config)
+        else:
+            if key in patched.models._pending:
+                patched.models._pending[key] = dict(config)
+            dict.__setitem__(patched.models, key, HiCacheModelPatch(inner, **config))
     if lazy_keys:
         logger.warning(
-            "[TRELLIS-HiCache] %s not loaded yet (lazy/GGUF pipeline); wrapped a "
-            "deferred patch on %s -- it binds when the sampler materializes the model.",
+            "[TRELLIS-HiCache] %s not loaded yet (lazy/GGUF pipeline); queued a "
+            "deferred patch on %s -- assignment wraps the materialized model.",
             type(pipeline).__name__, lazy_keys,
         )
     logger.info(
@@ -400,7 +429,11 @@ def remove_hicache(pipeline: Any) -> Any:
     """Return ``pipeline`` with the original DiTs restored (copy-on-unpatch)."""
     if not hasattr(pipeline, "models") or not isinstance(pipeline.models, dict):
         return pipeline
-    if not any(getattr(m, "_hicache_is_patch", False) for m in pipeline.models.values()):
+    has_patch = any(
+        getattr(m, "_hicache_is_patch", False) for m in pipeline.models.values()
+    )
+    has_pending = bool(getattr(pipeline.models, "_pending", {}))
+    if not has_patch and not has_pending:
         return pipeline
     clean = copy.copy(pipeline)
     clean.models = dict(pipeline.models)

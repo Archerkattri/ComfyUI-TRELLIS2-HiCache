@@ -162,30 +162,62 @@ def test_bind_inner_materializes_lazy_model():
     assert patch.computed_steps + patch.skipped_steps == 25
 
 
-def test_lazy_pipeline_autobinds_on_assignment():
-    """End-to-end lazy flow: patch a pipeline whose flow model is still None, then
-    the sampler assigns the real model into pipeline.models[key]; the patch must
-    bind it (not be overwritten) and then skip DiT steps."""
+def test_lazy_pipeline_guard_then_load_still_triggers():
+    """A lazy loader's ``is None`` guard must still run, including after unload."""
     class LazyPipe:
         def __init__(self):
             self.models = {"sparse_structure_flow_model": None,
                            "shape_slat_flow_model_512": None,
                            "shape_slat_flow_model_1024": None}
+            self.loads = []
+
+        def load_sparse_structure_model(self):
+            if self.models["sparse_structure_flow_model"] is None:
+                model = DummyDiT()
+                self.loads.append(model)
+                self.models["sparse_structure_flow_model"] = model
+            return self.models["sparse_structure_flow_model"]
+
     p = LazyPipe()
     patched = apply_hicache(p, method="hermite", interval=3, warmup_steps=2, stages="sparse_structure")
-    slot = patched.models["sparse_structure_flow_model"]
+    assert patched.models["sparse_structure_flow_model"] is None
+
+    slot = patched.load_sparse_structure_model()
     assert getattr(slot, "_hicache_is_patch", False)
-    assert slot.inner is None                      # deferred
-    # sampler materializes the real DiT (the exact GGUF lazy-load path)
-    dit = DummyDiT()
-    patched.models["sparse_structure_flow_model"] = dit
-    # same patch object, now bound -- not overwritten by the raw DiT
-    assert patched.models["sparse_structure_flow_model"] is slot
-    assert slot.inner is dit
+    assert slot.inner is patched.loads[0]
     for t in _trellis_t_seq(25):
         slot(torch.zeros(1, 8), t)
     assert slot.skipped_steps > 0
-    assert dit.calls == slot.computed_steps
+    assert patched.loads[0].calls == slot.computed_steps
+
+    patched.models["sparse_structure_flow_model"] = None
+    assert patched.models["sparse_structure_flow_model"] is None
+    replacement = patched.load_sparse_structure_model()
+    assert len(patched.loads) == 2
+    assert replacement is not slot
+    assert getattr(replacement, "_hicache_is_patch", False)
+    assert replacement.inner is patched.loads[1]
+
+
+def test_remove_hicache_clears_pending_before_any_load():
+    """Disabling a pending patch must not re-enable it on a later assignment."""
+    class LazyPipe:
+        def __init__(self):
+            self.models = {"sparse_structure_flow_model": None,
+                           "shape_slat_flow_model_512": None,
+                           "shape_slat_flow_model_1024": None}
+
+    patched = apply_hicache(
+        LazyPipe(), method="hermite", interval=3, warmup_steps=2,
+        stages="sparse_structure",
+    )
+    clean = remove_hicache(patched)
+    assert type(clean.models) is dict
+    assert clean.models["sparse_structure_flow_model"] is None
+
+    dit = DummyDiT()
+    clean.models["sparse_structure_flow_model"] = dit
+    assert clean.models["sparse_structure_flow_model"] is dit
 
 
 def test_eager_inner_still_registered_as_submodule():

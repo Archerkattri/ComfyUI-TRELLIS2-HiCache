@@ -32,5 +32,11 @@ Icon = "https://raw.githubusercontent.com/Archerkattri/ComfyUI-TRELLIS2-HiCache/
 addopts = "--import-mode=importlib"
 testpaths = ["tests"]
 
+[tool.ruff]
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.setuptools]
 py-modules = ["trellis_hicache_patch", "nodes"]

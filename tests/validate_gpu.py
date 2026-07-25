@@ -44,15 +44,19 @@ def main():
     def verts(mesh):
         return mesh.vertices.detach().float()
 
-    torch.cuda.synchronize(); t0 = time.time()
+    torch.cuda.synchronize()
+    t0 = time.time()
     m_stock = pipe.run(img, **kw)[0]
-    torch.cuda.synchronize(); t_stock = time.time() - t0
+    torch.cuda.synchronize()
+    t_stock = time.time() - t0
     v_stock = verts(m_stock)
 
     patched = apply_hicache(pipe, method=args.method, interval=args.interval, stages=args.stages)
-    torch.cuda.synchronize(); t0 = time.time()
+    torch.cuda.synchronize()
+    t0 = time.time()
     m_fast = patched.run(img, **kw)[0]
-    torch.cuda.synchronize(); t_fast = time.time() - t0
+    torch.cuda.synchronize()
+    t_fast = time.time() - t0
     v_fast = verts(m_fast)
 
     def chamfer(a, b, k=20000):

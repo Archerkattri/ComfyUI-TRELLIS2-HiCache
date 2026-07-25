@@ -92,7 +92,9 @@ def test_new_run_resets_on_direction_reversal():
 def test_sparse_output_forecast_rebuilds_sparse():
     """SLaT-style sparse output: forecast must return a FakeSparse, not a tensor."""
     class SparseDiT(torch.nn.Module):
-        def __init__(self): super().__init__(); self.calls = 0
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
         def forward(self, x, t, cond=None, **kw):
             self.calls += 1
             tv = float(t.reshape(-1)[0]) if torch.is_tensor(t) else float(t)

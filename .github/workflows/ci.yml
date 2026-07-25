@@ -24,5 +24,7 @@ jobs:
           pip install -e ".[test]"
       - name: Run CPU unit tests
         run: python -m pytest -q
+      - name: Run registry security style checks
+        run: python -m ruff check --select E702 .
       - name: Build wheel from clean metadata
         run: python -m pip wheel . --no-deps --wheel-dir dist

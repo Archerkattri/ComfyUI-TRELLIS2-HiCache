@@ -10,7 +10,10 @@ Run from a hermit-trellis2 checkout (which vendors the trellis2 package):
     PYTHONPATH=.:../comfyui-trellis2-hicache python ../comfyui-trellis2-hicache/tests/validate_gpu.py \
         --ckpt /home/krishi/workspace/data/weights/TRELLIS.2-4B --image <some.png>
 """
-import argparse, time, sys, types
+import argparse
+import sys
+import time
+import types
 
 
 def _stub_render_deps():
@@ -60,8 +63,10 @@ def main():
     v_fast = verts(m_fast)
 
     def chamfer(a, b, k=20000):
-        if a.shape[0] > k: a = a[torch.randperm(a.shape[0], device=a.device)[:k]]
-        if b.shape[0] > k: b = b[torch.randperm(b.shape[0], device=b.device)[:k]]
+        if a.shape[0] > k:
+            a = a[torch.randperm(a.shape[0], device=a.device)[:k]]
+        if b.shape[0] > k:
+            b = b[torch.randperm(b.shape[0], device=b.device)[:k]]
         return float((torch.cdist(a, b).min(1).values.mean()
                       + torch.cdist(b, a).min(1).values.mean()) / 2)
     cham = chamfer(v_stock, v_fast)

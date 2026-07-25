@@ -4,7 +4,8 @@ No ComfyUI, no GPU, no TRELLIS: a dummy DiT and a fake SparseTensor stand in for
 the real models, so the scheduling / CFG-routing / run-boundary / copy-on-patch
 logic is checked deterministically on CPU.
 """
-import sys, os
+import os
+import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
@@ -199,6 +200,78 @@ def test_lazy_pipeline_guard_then_load_still_triggers():
     assert replacement is not slot
     assert getattr(replacement, "_hicache_is_patch", False)
     assert replacement.inner is patched.loads[1]
+
+
+def test_lazy_reapply_updates_config_across_unload_reload():
+    """Re-patching a loaded lazy slot must update its future reload config."""
+    class LazyPipe:
+        def __init__(self):
+            self.models = {
+                "sparse_structure_flow_model": None,
+                "shape_slat_flow_model_512": None,
+                "shape_slat_flow_model_1024": None,
+            }
+
+    first = apply_hicache(
+        LazyPipe(), method="hermite", interval=3, stages="sparse_structure",
+    )
+    first.models["sparse_structure_flow_model"] = DummyDiT()
+    assert first.models["sparse_structure_flow_model"].interval == 3
+
+    second = apply_hicache(
+        first, method="dmd", interval=5, stages="sparse_structure",
+    )
+    loaded = second.models["sparse_structure_flow_model"]
+    assert isinstance(loaded, HiCacheModelPatch)
+    assert loaded.interval == 5
+    assert loaded.method == "dmd"
+    assert second.models._pending["sparse_structure_flow_model"]["interval"] == 5
+    assert second.models._pending["sparse_structure_flow_model"]["method"] == "dmd"
+
+    second.models["sparse_structure_flow_model"] = None
+    second.models["sparse_structure_flow_model"] = DummyDiT()
+    reloaded = second.models["sparse_structure_flow_model"]
+    assert isinstance(reloaded, HiCacheModelPatch)
+    assert reloaded.interval == 5
+    assert reloaded.method == "dmd"
+
+
+def test_lazy_subset_reapply_preserves_unselected_pending_stages():
+    """A subset re-patch must not disable deferred wrapping for other stages."""
+    class LazyPipe:
+        def __init__(self):
+            self.models = {
+                "sparse_structure_flow_model": None,
+                "shape_slat_flow_model_512": None,
+                "shape_slat_flow_model_1024": None,
+                "tex_slat_flow_model_512": None,
+                "tex_slat_flow_model_1024": None,
+            }
+
+    all_stages = apply_hicache(
+        LazyPipe(), method="hermite", interval=3, stages="all",
+    )
+    all_stages.models["sparse_structure_flow_model"] = DummyDiT()
+
+    sparse_only = apply_hicache(
+        all_stages, method="dmd", interval=5, stages="sparse_structure",
+    )
+    assert set(sparse_only.models._pending) == set(all_stages.models)
+    assert sparse_only.models._pending["sparse_structure_flow_model"]["interval"] == 5
+    assert sparse_only.models._pending["shape_slat_flow_model_512"]["interval"] == 3
+    assert sparse_only.models._pending["tex_slat_flow_model_1024"]["method"] == "hermite"
+
+    sparse_only.models["shape_slat_flow_model_512"] = DummyDiT()
+    shape = sparse_only.models["shape_slat_flow_model_512"]
+    assert isinstance(shape, HiCacheModelPatch)
+    assert shape.interval == 3
+    assert shape.method == "hermite"
+
+    sparse_only.models["tex_slat_flow_model_1024"] = DummyDiT()
+    texture = sparse_only.models["tex_slat_flow_model_1024"]
+    assert isinstance(texture, HiCacheModelPatch)
+    assert texture.interval == 3
+    assert texture.method == "hermite"
 
 
 def test_remove_hicache_clears_pending_before_any_load():

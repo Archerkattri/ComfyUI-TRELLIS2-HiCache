@@ -21,6 +21,11 @@ Pairs with [visualbruno/ComfyUI-Trellis2](https://github.com/visualbruno/ComfyUI
 [ComfyUI-TRELLIS-HiCache](https://github.com/Archerkattri/ComfyUI-TRELLIS-HiCache).
 
 ## What it does
+## Architecture at a glance
+
+![ComfyUI-TRELLIS2-HiCache architecture](docs/flow.svg)
+
+The integration keeps TRELLIS.2 shape generation explicit while making the forecasted steps visible in the ComfyUI execution path.
 
 TRELLIS.2 samples each stage with a flow-Euler loop that calls a DiT once (or
 twice, under classifier-free guidance) per step. **TRELLIS.2 HiCache Accelerate**

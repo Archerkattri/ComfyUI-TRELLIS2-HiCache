@@ -7,13 +7,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-trellis2-hicache"
-description = "Training-free TRELLIS.2 image-to-3D acceleration: forecast the flow-matching velocity on skipped DiT steps (HiCache Hermite / HiCache++ DMD, via hicache-pp) across the sparse-structure and shape-SLaT stages (texture optional). ~2x faster, near-lossless. Pairs with visualbruno/ComfyUI-Trellis2."
+description = "Training-free TRELLIS.2 image-to-3D acceleration: forecast the flow-matching velocity on skipped DiT steps (HiCache Hermite / HiCache++ DMD, via hicache-pp) across the sparse-structure and shape-SLaT stages (texture optional). Pairs with visualbruno/ComfyUI-Trellis2."
 version = "0.1.3"
 keywords = ["comfyui", "diffusion-acceleration", "caching", "training-free", "trellis2", "image-to-3d"]
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
-dependencies = ["hicache-pp>=1.1.0"]
+dependencies = ["hicache-pp>=1.2.1"]
 classifiers = ["Development Status :: 4 - Beta"]
 
 [project.optional-dependencies]

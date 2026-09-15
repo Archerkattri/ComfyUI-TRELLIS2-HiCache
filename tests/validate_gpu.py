@@ -62,13 +62,22 @@ def main():
     t_fast = time.time() - t0
     v_fast = verts(m_fast)
 
-    def chamfer(a, b, k=20000):
+    def chamfer(a, b, k=20000, chunk_size=2048):
         if a.shape[0] > k:
             a = a[torch.randperm(a.shape[0], device=a.device)[:k]]
         if b.shape[0] > k:
             b = b[torch.randperm(b.shape[0], device=b.device)[:k]]
-        return float((torch.cdist(a, b).min(1).values.mean()
-                      + torch.cdist(b, a).min(1).values.mean()) / 2)
+
+        def directed_min_mean(src, dst):
+            mins = []
+            for start in range(0, src.shape[0], chunk_size):
+                mins.append(torch.cdist(src[start:start + chunk_size], dst)
+                             .min(1).values)
+            return torch.cat(mins).mean()
+
+        # Keep the validator's peak distance matrix bounded instead of creating
+        # a 20,000 x 20,000 allocation (~1.6 GB in float32).
+        return float((directed_min_mean(a, b) + directed_min_mean(b, a)) / 2)
     cham = chamfer(v_stock, v_fast)
 
     total_skipped = 0

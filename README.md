@@ -42,7 +42,14 @@ stages return sparse tensors whose active-voxel layout is fixed during a run, so
 the forecast runs on `.feats` and the sparse tensor is rebuilt from the last
 computed step.
 
-## Measured (RTX 5090, TRELLIS.2-4B, `512` pipeline, interval=2, shape stages)
+## Historical measured result (not reproduced by this CPU gate)
+
+The following table is README-reported evidence from an earlier RTX 5090 run;
+it is not a current-commit or release claim. Re-run the GPU gate below with a
+fixed input, seed, checkpoint, and synchronized timing before using these
+figures.
+
+Setup: TRELLIS.2-4B, `512` pipeline, interval=2, shape stages.
 
 | metric | value |
 |---|---|
@@ -59,7 +66,7 @@ fidelity for more speed.
 ```bash
 cd ComfyUI/custom_nodes
 git clone https://github.com/Archerkattri/ComfyUI-TRELLIS2-HiCache
-pip install hicache-pp
+pip install "hicache-pp>=1.2.1"
 ```
 
 ## Use
@@ -69,10 +76,43 @@ pip install hicache-pp
 Set `enabled = Off` to bypass and restore the stock DiTs. The node never mutates
 the pipeline it is given (copy-on-patch).
 
+## First-result acceptance checklist
+
+Use a fixed input and record the visualbruno wrapper, checkpoint, resolution,
+node commit, seed, method, interval, stages, and torch/CUDA versions. Treat a
+run as accepted only after these checks:
+
+* Run a baseline with `enabled = Off` and retain the stock output and forward
+  counts.
+* Run the same input and seed with acceleration enabled. Inspect each selected
+  model patch's `run_id`, `stage_id`, latest `branch_id`, and detached
+  `telemetry` for actual full/forecast, method, and fallback counts. Integrations
+  that know job/CFG identity may pass `hicache_run_id` and
+  `hicache_branch_id`; those markers are consumed before the DiT call.
+* Cover 512, 1024/cascade, shape-only, both stages, and texture separately.
+  For every SLaT/texture path, confirm skipped outputs remain sparse tensors with
+  their expected active layout.
+* Exercise a fresh run (including cancellation/retry) with the same initial
+  timestep and a new run ID; confirm a first full decision and no reused state,
+  template, or texture branch.
+* Compare baseline and accelerated outputs and retain raw per-run telemetry.
+  GPU timing/quality and a clean visualbruno workflow import are separate
+  gates; this CPU package check makes no speed or quality claim.
+
 ## Validation
 
 `tests/test_patch.py` unit-tests the patch logic with a dummy DiT (no ComfyUI, no
-GPU). `tests/validate_gpu.py` is the end-to-end GPU check that produced the table
-above on a real TRELLIS.2-4B pipeline.
+GPU). `tests/validate_gpu.py` is the future end-to-end GPU check (loads a real
+TRELLIS.2-4B pipeline, applies the patch, compares geometry and wall-clock
+against stock); it is not run by this CPU packet. No accepted visualbruno
+workflow JSON/template is present in the checkout, so an invented graph is not
+included.
 
 Apache-2.0.
+
+## Current release status
+
+The current adapter includes the shared HiCache++ runtime bridge, explicit
+cache identity, timing and fallback accounting. Its CPU contract suite passes
+22 tests. Real TRELLIS2 model/CUDA workflow and output-quality comparisons
+remain unmeasured.

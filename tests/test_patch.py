@@ -13,6 +13,7 @@ import pytest
 from trellis_hicache_patch import (
     HiCacheModelPatch, apply_hicache, remove_hicache, validate_config,
 )
+from nodes import Trellis2HiCacheAccelerate
 
 
 class DummyDiT(torch.nn.Module):
@@ -51,6 +52,10 @@ def test_validate_config_rejects_bad_params():
         validate_config("hermite", 0, 2, 1, 0.5, 5)
     with pytest.raises(ValueError):
         validate_config("hermite", 3, 2, 1, 1.5, 5)
+    with pytest.raises(ValueError, match="dmd_history"):
+        validate_config("dmd", 3, 2, 1, 0.5, 3)
+    with pytest.raises(ValueError, match="dmd_history"):
+        validate_config("auto", 3, 2, 1, 0.5, 4)
 
 
 def test_skips_steps_on_decreasing_trellis_schedule():
@@ -75,6 +80,45 @@ def test_split_cfg_routes_two_states():
     assert patch.skipped_steps > 0
     assert patch.computed_steps + patch.skipped_steps == 50
     assert dit.calls < 50            # genuinely skipped DiT forwards
+
+
+def test_explicit_run_branch_identity_isolates_same_timestep_retry():
+    """Explicit job/CFG markers disambiguate retry from split CFG."""
+    dit = DummyDiT()
+    patch = HiCacheModelPatch(dit, method="hermite", interval=3, warmup_steps=1)
+    t0 = torch.tensor([1000.0])
+    x = torch.zeros(1, 8)
+
+    patch(x, t0, hicache_run_id="run-a", hicache_branch_id="cond")
+    assert patch.run_id == "run-a"
+    assert patch.stage_id == "unknown"
+    assert patch.branch_id == "cond"
+    patch(x, t0, hicache_run_id="run-a", hicache_branch_id="uncond")
+    assert patch.branch_id == "uncond"
+    assert patch.telemetry["branches"]["cond"]["decisions"]["full"] == 1
+    assert patch.telemetry["branches"]["uncond"]["decisions"]["full"] == 1
+
+    patch(x, t0, hicache_run_id="run-b", hicache_branch_id="cond")
+    assert patch.run_id == "run-b"
+    assert patch.computed_steps == 1 and patch.skipped_steps == 0
+    assert dit.calls == 3
+
+
+def test_telemetry_reports_actual_dmd_and_fallback_per_stage():
+    dit = DummyDiT()
+    patch = HiCacheModelPatch(dit, method="dmd", interval=3,
+                              warmup_steps=2, dmd_history=4,
+                              stage_id="tex_slat_flow_model_1024")
+    for t in _trellis_t_seq(35):
+        patch(torch.zeros(1, 8), t)
+    telemetry = patch.telemetry
+    assert telemetry["run_id"] == patch.run_id
+    assert telemetry["stage_id"] == "tex_slat_flow_model_1024"
+    assert telemetry["method_counts"]["hermite"] > 0
+    assert telemetry["method_counts"]["dmd"] > 0
+    assert sum(telemetry["fallbacks"].values()) > 0
+    telemetry["decisions"]["full"] = -1
+    assert patch.telemetry["decisions"]["full"] >= 1
 
 
 def test_new_run_resets_on_direction_reversal():
@@ -104,6 +148,31 @@ def test_sparse_output_forecast_rebuilds_sparse():
     outs = [patch(None, t) for t in _trellis_t_seq(12)]
     assert all(isinstance(o, FakeSparse) for o in outs)
     assert patch.skipped_steps > 0
+
+
+def test_interval_one_is_a_no_cache_full_compute_bypass():
+    dit = DummyDiT()
+    patch = HiCacheModelPatch(dit, method="hermite", interval=1,
+                              warmup_steps=0)
+    for t in _trellis_t_seq(12):
+        patch(torch.zeros(1, 8), t)
+    assert dit.calls == 12
+    assert patch.skipped_steps == 0
+
+
+def test_node_disabled_path_restores_stock_model():
+    class Pipe:
+        def __init__(self):
+            self.models = {"sparse_structure_flow_model": DummyDiT(),
+                           "shape_slat_flow_model_512": DummyDiT()}
+
+    p = Pipe()
+    enabled = Trellis2HiCacheAccelerate().patch(p, enabled=True, stages="both")[0]
+    restored = Trellis2HiCacheAccelerate().patch(
+        enabled, enabled=False, stages="both")[0]
+    assert restored is not enabled
+    assert all(not getattr(m, "_hicache_is_patch", False)
+               for m in restored.models.values())
 
 
 def test_apply_remove_is_copy_on_patch():
@@ -399,3 +468,32 @@ def test_stages_selector():
     ss = apply_hicache(p, stages="sparse_structure")
     assert getattr(ss.models["sparse_structure_flow_model"], "_hicache_is_patch", False)
     assert not getattr(ss.models["shape_slat_flow_model_512"], "_hicache_is_patch", False)
+
+
+def test_all_stage_selector_covers_five_slots_and_texture_only():
+    class Pipe:
+        def __init__(self):
+            self.models = {
+                "sparse_structure_flow_model": DummyDiT(),
+                "shape_slat_flow_model_512": DummyDiT(),
+                "shape_slat_flow_model_1024": DummyDiT(),
+                "tex_slat_flow_model_512": DummyDiT(),
+                "tex_slat_flow_model_1024": DummyDiT(),
+            }
+
+    p = Pipe()
+    all_stages = apply_hicache(p, stages="all")
+    assert all(
+        getattr(all_stages.models[key], "_hicache_is_patch", False)
+        for key in p.models
+    )
+    assert all_stages.models["tex_slat_flow_model_512"].stage_id == (
+        "tex_slat_flow_model_512")
+
+    texture = apply_hicache(p, stages="texture")
+    assert all(
+        getattr(texture.models[key], "_hicache_is_patch", False)
+        for key in ("tex_slat_flow_model_512", "tex_slat_flow_model_1024")
+    )
+    assert not getattr(
+        texture.models["sparse_structure_flow_model"], "_hicache_is_patch", False)

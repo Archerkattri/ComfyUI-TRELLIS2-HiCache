@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComfyUI-TRELLIS2-HiCache — Training-free TRELLIS.2 image-to-3D acceleration for ComfyUI</title>
+<meta name="description" content="Training-free acceleration for TRELLIS.2 image-to-3D in ComfyUI. It forecasts the flow-matching velocity on skipped DiT steps instead of running the transformer, across the sparse-structure and shape-SLaT stages via the hicache-pp library.">
+<style>
+  :root{
+    --bg:#ffffff; --ink:#17202a; --muted:#5a6572; --line:#e3e8ee;
+    --accent:#0c52d6; --accent-ink:#0c52d6; --code-bg:#f4f6f8; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    font-size:16px;line-height:1.6}
+  .wrap{max-width:860px;margin:0 auto;padding:0 22px}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  /* top bar */
+  .top{border-bottom:1px solid var(--line)}
+  .top .wrap{display:flex;align-items:baseline;gap:14px;padding-top:14px;padding-bottom:14px;flex-wrap:wrap}
+  .top .repo{font-weight:700;font-size:17px;color:var(--ink)}
+  .top .repo a{color:var(--ink)}
+  .top .ver{font-family:var(--mono);font-size:12px;color:var(--muted);border:1px solid var(--line);padding:1px 8px;border-radius:20px}
+  .top nav{margin-left:auto;display:flex;gap:16px;font-size:14px}
+  /* hero */
+  .hero{padding:34px 0 8px}
+  .hero img.banner{width:100%;height:auto;border:1px solid var(--line);display:block}
+  .hero h1{font-size:30px;line-height:1.25;margin:22px 0 6px;letter-spacing:-0.01em}
+  .hero p.lede{color:var(--muted);margin:0 0 14px;max-width:62ch}
+  pre{background:var(--code-bg);border:1px solid var(--line);padding:12px 14px;overflow-x:auto;
+    font-family:var(--mono);font-size:13px;line-height:1.55;margin:0 0 8px}
+  pre .c{color:#6a737d}
+  /* sections */
+  section{padding:26px 0 6px;border-top:1px solid var(--line);margin-top:26px}
+  section:first-of-type{border-top:0}
+  .sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:12px}
+  .sec-num{font-family:var(--mono);font-size:13px;color:var(--accent-ink);font-weight:700}
+  .sec-head h2{font-size:20px;margin:0}
+  table.ev{width:100%;border-collapse:collapse;font-size:14px}
+  table.ev th,table.ev td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  table.ev th{color:var(--muted);font-weight:600;width:34%}
+  table.ev td b{font-variant-numeric:tabular-nums}
+  .ok{color:#0a7b3c;font-weight:700}
+  .gallery{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .gallery figure{margin:0;border:1px solid var(--line)}
+  .gallery img,.gallery video{width:100%;height:auto;display:block}
+  .gallery figcaption{font-size:13px;color:var(--muted);padding:8px 10px;border-top:1px solid var(--line)}
+  .limits{background:#fbfcfd;border:1px solid var(--line);padding:14px 16px;font-size:14px}
+  .limits ul{margin:8px 0 0;padding-left:20px}
+  .limits li{margin:4px 0}
+  footer{border-top:1px solid var(--line);margin-top:30px;padding:16px 0 30px;color:var(--muted);font-size:13px}
+  footer .wrap{display:flex;gap:16px;flex-wrap:wrap}
+  @media (max-width:640px){.gallery{grid-template-columns:1fr}.hero h1{font-size:24px}}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <span class="repo"><a href="https://github.com/Archerkattri/ComfyUI-TRELLIS2-HiCache">ComfyUI-TRELLIS2-HiCache</a></span>
+  <span class="ver">0.1.4</span>
+  <nav><a href="https://github.com/Archerkattri/ComfyUI-TRELLIS2-HiCache">Code</a><a href="https://github.com/Archerkattri/ComfyUI-TRELLIS2-HiCache/releases/tag/v0.1.4">Release</a> <a href="https://registry.comfy.org/publishers/archerkattri/nodes/comfyui-trellis2-hicache">Comfy Registry</a></nav>
+</div></header>
+<main class="wrap">
+  <div class="hero">
+    <img class="banner" src="assets/icon.png" alt="ComfyUI-TRELLIS2-HiCache banner">
+    <h1>Forecast TRELLIS.2 flow velocity on skipped DiT steps</h1>
+    <p class="lede">Training-free acceleration for TRELLIS.2 image-to-3D in ComfyUI. It forecasts the flow-matching velocity on skipped DiT steps instead of running the transformer, across the sparse-structure and shape-SLaT stages via the hicache-pp library.</p>
+    <pre>cd ComfyUI/custom_nodes
+git clone https://github.com/Archerkattri/ComfyUI-TRELLIS2-HiCache
+pip install "hicache-pp&gt;=1.2.1"</pre>
+  </div>
+  <section><div class="sec-head"><span class="sec-num">01</span><h2>Evidence</h2></div>
+    <table class="ev"><tr><th>Historical speedup, TRELLIS.2-4B 512 pipeline, interval=2</th><td><b>1.9x</b> on an earlier RTX 5090 run (README-reported, not reproduced by the CPU gate)</td></tr><tr><th>Chamfer distance vs stock mesh vertices</th><td><b>0.0107</b> symmetric mean nearest-neighbour distance (near-lossless)</td></tr><tr><th>Sparse-structure / shape-SLaT skipped DiT calls</th><td><b>9 / 9</b> of ~22 DiT calls each at interval=2</td></tr><tr><th>CPU contract suite</th><td><b>22 tests</b> passing (dummy-DiT patch logic, no GPU)</td></tr><tr><th>TRELLIS.2 flow DiTs covered by stages selection</th><td><b>five</b> (sparse_structure, shape_slat 512/1024, tex_slat 512/1024)</td></tr><tr><th>CI verification on release v0.1.4</th><td><b>green</b> CPU unit tests + static checks on Python 3.10-3.12</td></tr></table>
+  </section>
+  <section><div class="sec-head"><span class="sec-num">02</span><h2>Media</h2></div>
+    <div class="gallery"><figure><img src="assets/flow.svg" alt="TRELLIS.2 HiCache runtime path"><figcaption>Runtime path: acceleration confined to supported shape stages; texture stays explicit (docs/flow.svg).</figcaption></figure><figure><img src="assets/icon.png" alt="ComfyUI-TRELLIS2-HiCache icon"><figcaption>Node pack icon, also the README hero image.</figcaption></figure></div>
+  </section>
+  <section><div class="sec-head"><span class="sec-num">03</span><h2>Install &amp; verify</h2></div>
+    <pre>python -m pytest tests/test_patch.py tests/test_budget_bridge.py -q
+<span class="c"># expect 22 passed (CPU contract suite); tests/validate_gpu.py needs a GPU + TRELLIS.2-4B and is not run here</span></pre>
+  </section>
+  <section><div class="sec-head"><span class="sec-num">04</span><h2>Limits</h2></div>
+    <div class="limits"><p style="margin:0">What this release does <b>not</b> claim (from the release notes):</p><ul><li>In-ComfyUI GPU validation (no GPU hardware).</li></ul></div>
+  </section>
+</main>
+<footer><div class="wrap"><span>MIT · © 2026 Krishi Attri</span><span></span><span style="margin-left:auto"><a href="https://github.com/Archerkattri/ComfyUI-TRELLIS2-HiCache">ComfyUI-TRELLIS2-HiCache</a></span></div></footer>
+</body>
+</html>

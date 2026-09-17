@@ -8,7 +8,7 @@ import torch
 PACK_DIR = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACK_DIR))
 
-from trellis_hicache_patch import HiCacheModelPatch
+from trellis_hicache_patch import HiCacheModelPatch  # noqa: E402  (needs sys.path above)
 
 
 class _DiT(torch.nn.Module):

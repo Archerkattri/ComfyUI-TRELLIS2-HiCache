@@ -283,40 +283,6 @@ class HiCacheModelPatch(torch.nn.Module):
             json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8"
         )
 
-    @property
-    def budget_manifest(self) -> Dict[str, Any]:
-        """Aggregate branch manifests without exposing tensors or private inputs."""
-        if self._budget_runtimes:
-            branches = {
-                branch: runtime.manifest.as_dict()
-                for branch, runtime in self._budget_runtimes.items()
-            }
-            counts = {"full": 0, "forecast": 0, "fallback": 0}
-            for report in branches.values():
-                for mode in counts:
-                    counts[mode] += int(report["counts"].get(mode, 0))
-            return {
-                "schema": "hicache-pp.trellis2-budget-manifest.v1",
-                "counts": counts,
-                "branches": branches,
-            }
-        return copy.deepcopy(self._last_budget_manifest)
-
-    @property
-    def budget_decision(self) -> Dict[str, Any]:
-        return copy.deepcopy(self._last_budget_decision)
-
-    def save_budget_manifest(self, destination: str) -> None:
-        import json
-        from pathlib import Path
-
-        report = self.budget_manifest
-        if not report:
-            raise RuntimeError("no budget manifest exists; run the patched model first")
-        Path(destination).write_text(
-            json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-        )
-
     def _set_inner(self, model: Optional[torch.nn.Module]) -> None:
         """Store the wrapped model so ``self.inner`` is always resolvable.
 

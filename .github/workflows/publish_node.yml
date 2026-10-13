@@ -12,7 +12,40 @@ jobs:
     if: ${{ github.repository_owner == 'Archerkattri' }}
     steps:
       - uses: actions/checkout@v7
+      - name: Check whether this version is already published
+        id: registry
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import tomllib
+          import urllib.error
+          import urllib.request
+
+          with pathlib.Path("pyproject.toml").open("rb") as source:
+              project = tomllib.load(source)
+          node = project["project"]["name"]
+          version = project["project"]["version"]
+          if os.environ["GITHUB_REF_TYPE"] == "tag" and os.environ["GITHUB_REF_NAME"] != f"v{version}":
+              raise SystemExit(f"release tag must be v{version}")
+
+          request = urllib.request.Request(f"https://api.comfy.org/nodes/{node}/versions")
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  versions = json.load(response)
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              versions = []
+          published = any(item.get("version") == version for item in versions)
+          if published:
+              print(f"Comfy Registry already has {node} {version}; this retry is a no-op.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"already_published={str(published).lower()}\n")
+          PY
       - name: Publish Custom Node
+        if: steps.registry.outputs.already_published != 'true'
         uses: Comfy-Org/publish-node-action@v1
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
